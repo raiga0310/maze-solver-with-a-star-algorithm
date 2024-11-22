@@ -1,4 +1,4 @@
-use std::{fs, io::Read, ops::Add, thread::sleep, time};
+use std::{cmp::Reverse, collections::BinaryHeap, fs, io::Read, ops::Add, thread::sleep, time};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum State {
@@ -57,31 +57,6 @@ pub struct Point {
     y: usize,
 }
 
-impl Point {
-    fn able_direction(&self) -> Vec<Direction> {
-        const X_MAX: &usize = &20;
-        const Y_MAX: &usize = &12;
-        let x = &self.x;
-        let y = &self.y;
-        match (x, y) {
-            (0, 0) => vec![Direction::Right, Direction::Down],
-            (0, Y_MAX) => vec![Direction::Left, Direction::Up],
-            (X_MAX, Y_MAX) => vec![Direction::Left, Direction::Up],
-            (X_MAX, 0) => vec![Direction::Left, Direction::Down],
-            (_, 0) => vec![Direction::Left, Direction::Right, Direction::Down],
-            (_, Y_MAX) => vec![Direction::Left, Direction::Right, Direction::Up],
-            (0, _) => vec![Direction::Right, Direction::Up, Direction::Down],
-            (X_MAX, _) => vec![Direction::Left, Direction::Up, Direction::Down],
-            (_, _) => vec![
-                Direction::Left,
-                Direction::Right,
-                Direction::Up,
-                Direction::Down,
-            ],
-        }
-    }
-}
-
 // 0の場合は事前に弾くように気をつける(isizeにしてusizeキャスト対応が面倒)
 impl Add for Point {
     type Output = Self;
@@ -115,106 +90,99 @@ pub struct Field {
     g_cost: Option<usize>,
 }
 
-pub fn search_dungeon(mut dungeon: Vec<Vec<Field>>) -> Vec<Direction> {
-    let start = dungeon
-        .iter()
-        .flatten()
-        .filter(|&f| f.state == State::Start)
-        .collect::<Vec<_>>()
-        .remove(0)
-        .clone()
-        .point;
-    let goal = dungeon
-        .iter()
-        .flatten()
-        .filter(|&f| f.state == State::Goal)
-        .collect::<Vec<_>>()
-        .remove(0)
-        .clone()
-        .point;
-    // search dungeon
-    let mut openlist: Vec<Point> = vec![start];
-    let mut src: Point;
-    loop {
-        if openlist.is_empty() {
-            println!("unreachable goal");
-            break;
-        }
-
-        // select
-        // // sort by f_const asc
-        openlist.sort_by(|a, b| dungeon[a.y][a.x].f_cost.cmp(&dungeon[b.y][b.x].f_cost));
-        src = openlist.remove(0);
-
-        if dungeon[src.y][src.x].state == State::Goal {
-            println!("--- reached the goal!! ---");
-            // generate path
-            break;
-        }
-
-        // expand
-        //
-        let able_direction: Vec<Direction> = src.able_direction();
-
-        clearscreen::clear().expect("failed to clear screen");
-        display_dungeon(&dungeon);
-        sleep(time::Duration::from_millis(100));
-
-        let mut next_aisles: Vec<Point> = vec![];
-
-        for direction in able_direction {
-            let next = src.clone() + from_direction(direction);
-            let h_cost = manhattan(&next, &goal);
-            if dungeon[next.y][next.x].state != State::Wall
-                && dungeon[next.y][next.x].f_cost.is_none()
-            {
-                let src_g_cost = dungeon[src.y][src.x].g_cost.unwrap();
-                dungeon[next.y][next.x].g_cost = Some(src_g_cost + 1usize);
-                dungeon[next.y][next.x].f_cost = Some(src_g_cost + 1usize + h_cost);
-                next_aisles.push(next);
-            }
-        }
-
-        // generate
-        openlist = next_aisles.into_iter().chain(openlist).collect();
+impl Field {
+    fn x(&self) -> usize {
+        self.point.x
     }
-    vec![] // todo
+
+    fn y(&self) -> usize {
+        self.point.y
+    }
 }
 
-pub fn create_dungeon() -> Vec<Vec<Field>> {
-    let mut dungeon = vec![];
-    // read src/dungeon
-    // create dungeon
-    let mut file = fs::File::open("dungeon").expect("file not found");
-
-    let mut contents = String::new();
-
-    file.read_to_string(&mut contents)
-        .expect("invalid file format");
-    for (i, line) in contents.lines().enumerate() {
-        let mut row = vec![];
-        for (j, c) in line.chars().enumerate() {
-            let state = match c {
-                ' ' => State::Aisle,
-                '*' => State::Wall,
-                'S' => State::Start,
-                'G' => State::Goal,
-                _ => panic!("invalid character"),
-            };
-            row.push(Field {
-                point: Point {
-                    pn: true,
-                    x: j,
-                    y: i,
-                },
-                state,
-                g_cost: Some(0),
-                ..Default::default()
-            });
-        }
-        dungeon.push(row);
+impl PartialOrd for Field {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.f_cost.unwrap_or(0).cmp(&other.f_cost.unwrap_or(0)))
     }
-    dungeon
+}
+
+impl Ord for Field {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.f_cost.unwrap_or(0).cmp(&other.f_cost.unwrap_or(0))
+    }
+}
+
+#[derive(Debug)]
+pub struct Dungeon {
+    pub dungeon: Vec<Vec<Field>>,
+    pub width: usize,
+    pub height: usize,
+}
+
+impl Dungeon {
+    pub fn new() -> Self {
+        let mut dungeon = vec![];
+        // read src/dungeon
+        // create dungeon
+        let mut file = fs::File::open("dungeon").expect("file not found");
+    
+        let mut contents = String::new();
+    
+        file.read_to_string(&mut contents)
+            .expect("invalid file format");
+        let mut width: usize = 0;
+        let mut height: usize = 0;
+        for (i, line) in contents.lines().enumerate() {
+            let mut row = vec![];
+            for (j, c) in line.chars().enumerate() {
+                let state = match c {
+                    ' ' => State::Aisle,
+                    '*' => State::Wall,
+                    'S' => State::Start,
+                    'G' => State::Goal,
+                    _ => panic!("invalid character"),
+                };
+                row.push(Field {
+                    point: Point {
+                        pn: true,
+                        x: j,
+                        y: i,
+                    },
+                    state,
+                    g_cost: Some(0),
+                    ..Default::default()
+                });
+                width = if width < j { j } else { width };
+            }
+            dungeon.push(row);
+            height = if height < i { i } else { height };
+        }
+
+        Self {
+            dungeon,
+            width, 
+            height,
+        }
+    }
+
+    fn next_point(&self, base: Point) -> Vec<Point> {
+            let points = match (base.x, base.y) {
+                (0, 0) => vec![Direction::Down, Direction::Right],
+                (0, _) => vec![Direction::Up, Direction::Down, Direction::Right],
+                (_, 0) => vec![Direction::Down, Direction::Left, Direction::Right],
+                _ => vec![Direction::Up, Direction::Down, Direction::Left, Direction::Right],
+            };
+            points
+                .into_iter()
+                .map(|d| base.clone() + from_direction(d))
+                .map(Point::from)
+                .filter(|p| self.is_inside(p))
+                .collect()
+    }
+
+    fn is_inside(&self, target: &Point) -> bool {
+        target.x < self.width && target.y < self.height
+    }
 }
 
 pub fn display_dungeon(dungeon: &Vec<Vec<Field>>) {
@@ -233,4 +201,61 @@ pub fn display_dungeon(dungeon: &Vec<Vec<Field>>) {
         }
         println!(); // 行の終わりで改行
     }
+}
+
+pub fn search_dungeon(mut dungeon: Dungeon) -> Vec<Direction> {
+    let start = dungeon.dungeon
+        .iter()
+        .flatten()
+        .filter(|&f| f.state == State::Start)
+        .collect::<Vec<_>>()
+        .remove(0)
+        .clone();
+    let goal = dungeon.dungeon
+        .iter()
+        .flatten()
+        .filter(|&f| f.state == State::Goal)
+        .collect::<Vec<_>>()
+        .remove(0)
+        .clone();
+    // search dungeon
+    // *min-heap*
+    let mut openlist = BinaryHeap::from([Reverse(start)]);
+    let mut src: Field;
+    loop {
+        if openlist.is_empty() {
+            println!("unreachable goal");
+            break;
+        }
+
+        // select
+        src = {
+            let reverse = openlist.pop().unwrap();
+            reverse.0
+        };
+
+        if dungeon.dungeon[src.y()][src.x()].state == State::Goal {
+            println!("--- reached the goal!! ---");
+            // generate path
+            break;
+        }
+
+        clearscreen::clear().expect("failed to clear screen");
+        display_dungeon(&dungeon.dungeon);
+        sleep(time::Duration::from_millis(100));
+
+
+        let src_g_cost = dungeon.dungeon[src.y()][src.x()].g_cost.unwrap();
+        for point in dungeon.next_point(src.point) {
+            let h_cost = manhattan(&point, &goal.point);
+            if dungeon.dungeon[point.y][point.x].state != State::Wall
+                && dungeon.dungeon[point.y][point.x].f_cost.is_none()
+            {
+                dungeon.dungeon[point.y][point.x].g_cost = Some(src_g_cost + 1usize);
+                dungeon.dungeon[point.y][point.x].f_cost = Some(src_g_cost + 1usize + h_cost);
+                openlist.push(Reverse(dungeon.dungeon[point.y][point.x].clone()));
+            }
+        }
+    }
+    vec![] // todo
 }
